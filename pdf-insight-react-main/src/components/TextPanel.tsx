@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Copy, Download, FileText, Wand2 } from 'lucide-react';
+import { Copy, Download, FileText, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { correctText } from '@/services/openai';
 
 interface TextPanelProps {
   extractedText: string;
@@ -14,6 +15,7 @@ interface TextPanelProps {
 export const TextPanel = ({ extractedText, fileName, onUpdateExtractedText }: TextPanelProps) => {
   const { toast } = useToast();
   const [isFixing, setIsFixing] = useState(false);
+  const [isUsingAI, setIsUsingAI] = useState(false);
 
   const copyToClipboard = async () => {
     try {
@@ -52,44 +54,139 @@ const wordCount = extractedText.trim().split(/\s+/).filter(word => word.length >
 const charCount = extractedText.length;
 
 const refineLocally = (text: string) => {
-  let t = text || '';
-  t = t.replace(/-\n/g, '');
-  t = t.replace(/\r/g, '');
-  t = t.replace(/[ \t]+\n/g, '\n');
-  t = t.replace(/\n{3,}/g, '\n\n');
-  t = t.replace(/([.!?])\s+(?=[A-Z])/g, '$1\n\n');
-  t = t.replace(/\n{3,}/g, '\n\n');
+  if (!text) return '';
+  
+  let t = text;
+  
+  // Remove emojis
+  t = t.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '');
+  
+  // Remove page break markers
+  t = t.replace(/---\s*Page\s*Break\s*---/gi, '');
+  
+  // Replace bullet symbols with spaces but preserve the text content
+  t = t.replace(/([\u2022\u25cf\u25a0\u25c6\u25cb\u25e6-])\s*/g, ''); // Replace bullet symbols with nothing
+  t = t.replace(/\|/g, ''); // Remove vertical bars
+  
+  // Fix spaced out letters (e.g., "A d m i n" -> "Admin")
+  t = fixSpacedLetters(t);
+  
+  // Basic cleanup
+  t = t.replace(/-\n/g, ''); // Join hyphenated words across lines
+  t = t.replace(/\r/g, ''); // Remove carriage returns
+  t = t.replace(/[ \t]+/g, ' '); // Replace multiple spaces/tabs with a single space
+  t = t.replace(/[ \t]+\n/g, '\n'); // Remove spaces at end of lines
+  t = t.replace(/\n[ \t]+/g, '\n'); // Remove spaces at beginning of lines
+  
+  // Fix common PDF extraction issues
+  t = t.replace(/([a-z])- ?\n([a-z])/gi, '$1$2'); // Fix hyphenated words across lines
+  t = t.replace(/([a-z])\n([a-z])/gi, '$1 $2'); // Join words broken across lines without hyphen
+  
+  // Improve section separation for date ranges and job titles
+  // Format MM/YYYY - MM/YYYY or MM/YYYY - Present
+  t = t.replace(/(\d{1,2}\/\d{4})\s*[-–—]\s*(\d{1,2}\/\d{4}|Present)/gi, '\n\n$&\n');
+  
+  // Format YYYY - YYYY or YYYY - Present
+  t = t.replace(/(?<!\d)(\d{4})\s*[-–—]\s*(\d{4}|Present)(?!\d)/gi, '\n\n$&\n');
+  
+  // Handle job titles and positions
+  t = t.replace(/^(.{0,50})(Project Manager|Head Of|Director|Manager|Engineer|Developer|Designer|Consultant|Analyst|Specialist)/gim, '\n\n$1$2');
+  
+  // Add spacing after common section headers
+  const sectionHeaders = ['Experience', 'Education', 'Skills', 'Languages', 'Projects', 'Certifications', 'References', 'Responsibilities', 'Achievements', 'Key responsibilities'];
+  const sectionRegex = new RegExp(`(^|\n)\s*\b(${sectionHeaders.join('|')})\b[^\n]*`, 'gim');
+  t = t.replace(sectionRegex, '\n\n$&\n');
+  
+  // Improve paragraph structure
+  t = t.replace(/\n{3,}/g, '\n\n'); // Replace 3+ newlines with just 2
+  t = t.replace(/([.!?])\s+(?=[A-Z])/g, '$1\n\n'); // Add paragraph breaks after sentences
+  t = t.replace(/\n{3,}/g, '\n\n'); // Clean up any resulting excessive newlines
+  
   return t.trim();
 };
 
-const fixText = async () => {
+// Function to fix spaced out letters (e.g., "A d m i n" -> "Admin")
+const fixSpacedLetters = (text: string): string => {
+  // Pattern to detect single letters separated by spaces
+  const singleLetterPattern = /(?:\b([a-zA-Z]) )+([a-zA-Z])\b/g;
+  
+  // Find all instances of spaced out letters
+  const matches = Array.from(text.matchAll(singleLetterPattern));
+  
+  // If no matches, return the original text
+  if (matches.length === 0) return text;
+  
+  // Process each match
+  let result = text;
+  for (const match of matches) {
+    const fullMatch = match[0];
+    // Join the letters without spaces
+    const joined = fullMatch.replace(/ /g, '');
+    
+    // Only replace if the joined version is likely a real word (more than 2 letters)
+    if (joined.length > 2) {
+      result = result.replace(fullMatch, joined);
+    }
+  }
+  
+  return result;
+};
+
+// Basic text formatting using local functions
+const fixTextLocally = async () => {
   if (!extractedText?.trim()) return;
   try {
     setIsFixing(true);
-    const res = await fetch('/functions/v1/fix-text', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: extractedText }),
+    const locallyRefined = refineLocally(extractedText);
+    onUpdateExtractedText?.(locallyRefined);
+    toast({ 
+      title: 'Basic formatting applied', 
+      description: 'Text improved with local formatting rules.'
     });
-
-    if (res.ok) {
-      const data = await res.json();
-      const newText = data.fixedText || data.text || data.result || refineLocally(extractedText);
-      onUpdateExtractedText?.(newText);
-      toast({ title: 'Text improved', description: 'AI formatting applied.' });
-    } else {
-      const newText = refineLocally(extractedText);
-      onUpdateExtractedText?.(newText);
-      toast({ title: 'AI not configured', description: 'Using local formatter. Connect Supabase to enable AI.' });
-    }
   } catch (e) {
-    const newText = refineLocally(extractedText);
-    onUpdateExtractedText?.(newText);
-    toast({ title: 'Local fix applied', description: 'AI unavailable; used smart paragraphing.' });
+    console.error('Local text fixing error:', e);
+    toast({ 
+      title: 'Error fixing text', 
+      description: 'Failed to apply text formatting.'
+    });
   } finally {
     setIsFixing(false);
   }
 };
+
+// Advanced text correction using local formatting
+const fixTextWithAI = async () => {
+  if (!extractedText?.trim()) return;
+  
+  try {
+    setIsUsingAI(true);
+    
+    // Apply enhanced local text formatting
+    const formattedText = await Promise.resolve(correctText(extractedText));
+    onUpdateExtractedText?.(formattedText);
+    
+    toast({ 
+      title: 'Text formatting complete', 
+      description: 'Text improved with advanced formatting rules.'
+    });
+  } catch (e: any) {
+    console.error('Text formatting error:', e);
+    
+    // Fall back to basic formatting
+    const locallyRefined = refineLocally(extractedText);
+    onUpdateExtractedText?.(locallyRefined);
+    
+    toast({ 
+      title: 'Using basic formatting', 
+      description: 'Applied basic text improvements only.',
+      variant: 'destructive'
+    });
+  } finally {
+    setIsUsingAI(false);
+  }
+};
+
+
 
   return (
     <Card className="h-full bg-text-panel">
@@ -105,7 +202,7 @@ const fixText = async () => {
           </div>
         </div>
         
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button 
             variant="outline" 
             size="sm"
@@ -123,6 +220,16 @@ const fixText = async () => {
           >
             <Download className="h-4 w-4 mr-1" />
             Download
+          </Button>
+          <Button 
+            variant="default"
+            size="sm"
+            onClick={fixTextWithAI}
+            disabled={!extractedText || isFixing || isUsingAI}
+          >
+            <FileText className="h-4 w-4 mr-1" />
+            {isUsingAI ? "Formatting..." : "Format Text"}
+            {isUsingAI && <Loader2 className="ml-2 h-4 w-4 animate-spin" />}
           </Button>
         </div>
       </CardHeader>
