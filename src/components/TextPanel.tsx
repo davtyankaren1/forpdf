@@ -1,21 +1,29 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Copy, Download, FileText, Loader2 } from 'lucide-react';
+import { Copy, Download, FileText, Loader2, FileDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { correctText } from '@/services/openai';
+import { jsPDF } from 'jspdf';
 
 interface TextPanelProps {
   extractedText: string;
   fileName?: string;
   onUpdateExtractedText?: (text: string) => void;
+  isLoading?: boolean;
 }
 
-export const TextPanel = ({ extractedText, fileName, onUpdateExtractedText }: TextPanelProps) => {
+export const TextPanel = ({ extractedText, fileName, onUpdateExtractedText, isLoading }: TextPanelProps) => {
   const { toast } = useToast();
   const [isFixing, setIsFixing] = useState(false);
   const [isUsingAI, setIsUsingAI] = useState(false);
+  const [editableText, setEditableText] = useState(extractedText);
+  
+  // Update editable text when extractedText changes
+  useEffect(() => {
+    setEditableText(extractedText);
+  }, [extractedText]);
 
   const copyToClipboard = async () => {
     try {
@@ -34,7 +42,7 @@ export const TextPanel = ({ extractedText, fileName, onUpdateExtractedText }: Te
   };
 
   const downloadText = () => {
-    const blob = new Blob([extractedText], { type: 'text/plain' });
+    const blob = new Blob([editableText], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -49,9 +57,37 @@ export const TextPanel = ({ extractedText, fileName, onUpdateExtractedText }: Te
       description: "Text file download has been initiated",
     });
   };
+  
+  const downloadAsPDF = () => {
+    try {
+      const doc = new jsPDF();
+      
+      // Split text into lines to fit on PDF page
+      const textLines = doc.splitTextToSize(editableText, 180);
+      
+      // Add text to PDF
+      doc.setFontSize(12);
+      doc.text(textLines, 15, 15);
+      
+      // Save PDF
+      doc.save(`${fileName ? fileName.replace('.pdf', '') : 'edited'}_document.pdf`);
+      
+      toast({
+        title: "PDF Download started",
+        description: "Edited document has been saved as PDF",
+      });
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      toast({
+        title: "PDF generation failed",
+        description: "Failed to generate PDF from text",
+        variant: "destructive",
+      });
+    }
+  };
 
-const wordCount = extractedText.trim().split(/\s+/).filter(word => word.length > 0).length;
-const charCount = extractedText.length;
+const wordCount = editableText.trim().split(/\s+/).filter(word => word.length > 0).length;
+const charCount = editableText.length;
 
 const refineLocally = (text: string) => {
   if (!text) return '';
@@ -216,10 +252,19 @@ const fixTextWithAI = async () => {
             variant="outline" 
             size="sm"
             onClick={downloadText}
-            disabled={!extractedText}
+            disabled={!editableText}
           >
             <Download className="h-4 w-4 mr-1" />
-            Download
+            Download Text
+          </Button>
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={downloadAsPDF}
+            disabled={!editableText}
+          >
+            <FileDown className="h-4 w-4 mr-1" />
+            Download PDF
           </Button>
           <Button 
             variant="default"
@@ -235,11 +280,18 @@ const fixTextWithAI = async () => {
       </CardHeader>
       
       <CardContent className="p-4">
-        {extractedText ? (
+        {editableText ? (
           <div className="bg-white dark:bg-gray-900 rounded-lg p-4 h-full min-h-[400px] max-h-[600px] overflow-auto border">
-            <pre className="whitespace-pre-wrap text-sm text-foreground font-mono leading-relaxed">
-              {extractedText}
-            </pre>
+            <textarea 
+              className="w-full h-full min-h-[400px] bg-transparent text-sm text-foreground font-mono leading-relaxed resize-none focus:outline-none focus:ring-0 border-none"
+              value={editableText}
+              onChange={(e) => {
+                setEditableText(e.target.value);
+                if (onUpdateExtractedText) {
+                  onUpdateExtractedText(e.target.value);
+                }
+              }}
+            />
           </div>
         ) : (
           <div className="flex items-center justify-center h-[400px] text-muted-foreground">
