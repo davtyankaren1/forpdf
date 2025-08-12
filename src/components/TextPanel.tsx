@@ -26,7 +26,7 @@ export const TextPanel = ({ extractedText, fileName, onUpdateExtractedText, isLo
   }, [extractedText]);
 
   const copyToClipboard = async () => {
-    try {
+  try {
       await navigator.clipboard.writeText(extractedText);
       toast({
         title: "Text copied",
